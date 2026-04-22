@@ -28,15 +28,13 @@ A real-time computer vision system that detects hand gestures using MediaPipe an
 
 ## 📁 Project Structure
 
-sign-language-system/
-│
-├── app.py               # Streamlit app
-├── train_model.py       # Model training
-├── collect_data.py      # Data collection
-├── check_kaggle.py      # Dataset validation
-├── model.pkl            # Trained model
-├── dataset.csv          # Dataset
-└── requirements.txt
+- app.py — Streamlit app  
+- train_model.py — Model training  
+- collect_data.py — Data collection  
+- check_kaggle.py — Dataset validation  
+- model.pkl — Trained model  
+- dataset.csv — Dataset  
+- requirements.txt  
 
 ---
 

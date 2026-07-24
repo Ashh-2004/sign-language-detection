@@ -16,10 +16,83 @@ RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-# Initialize MediaPipe Hands
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-mp_hands = mp.solutions.hands
+# Check MediaPipe API version
+HAS_SOLUTIONS = hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands')
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)
+]
+
+def draw_landmarks_cv(image, hand_landmarks):
+    height, width, _ = image.shape
+    for start_idx, end_idx in HAND_CONNECTIONS:
+        pt1 = (int(hand_landmarks[start_idx].x * width), int(hand_landmarks[start_idx].y * height))
+        pt2 = (int(hand_landmarks[end_idx].x * width), int(hand_landmarks[end_idx].y * height))
+        cv2.line(image, pt1, pt2, (0, 255, 0), 2)
+    for lm in hand_landmarks:
+        cx, cy = int(lm.x * width), int(lm.y * height)
+        cv2.circle(image, (cx, cy), 5, (0, 0, 255), -1)
+
+class HandTracker:
+    def __init__(self):
+        self.use_solutions = HAS_SOLUTIONS
+        if self.use_solutions:
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.mp_drawing_styles = mp.solutions.drawing_styles
+            self.mp_hands = mp.solutions.hands
+            self.hands = self.mp_hands.Hands(
+                model_complexity=0,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+        else:
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+            model_path = os.path.join(os.path.dirname(__file__), 'hand_landmarker.task')
+            if not os.path.exists(model_path):
+                import urllib.request
+                url = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+                urllib.request.urlretrieve(url, model_path)
+            base_options = python.BaseOptions(model_asset_path=model_path)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.IMAGE,
+                num_hands=2,
+                min_hand_detection_confidence=0.3,
+                min_hand_presence_confidence=0.3
+            )
+            self.detector = vision.HandLandmarker.create_from_options(options)
+
+    def process(self, img_bgr):
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img_rgb = np.ascontiguousarray(img_rgb)
+        landmarks_list = []
+        
+        if self.use_solutions:
+            results = self.hands.process(img_rgb)
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    self.mp_drawing.draw_landmarks(
+                        img_bgr,
+                        hand_landmarks,
+                        self.mp_hands.HAND_CONNECTIONS,
+                        self.mp_drawing_styles.get_default_hand_landmarks_style(),
+                        self.mp_drawing_styles.get_default_hand_connections_style()
+                    )
+                    landmarks_list.append(hand_landmarks.landmark)
+        else:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+            result = self.detector.detect(mp_image)
+            if result.hand_landmarks:
+                for hand_landmarks in result.hand_landmarks:
+                    draw_landmarks_cv(img_bgr, hand_landmarks)
+                    landmarks_list.append(hand_landmarks)
+                    
+        return landmarks_list
 
 @st.cache_resource(show_spinner="Loading scale-invariant model...")
 def load_sign_model():
@@ -33,7 +106,7 @@ def load_sign_model():
 def get_landmarks(hand_landmarks):
     """Extracts 210 pairwise distances between 21 hand landmarks to match Kaggle dataset format."""
     landmarks = []
-    points = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+    points = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks])
     
     for i in range(len(points)):
         for j in range(i + 1, len(points)):
@@ -48,38 +121,22 @@ def get_landmarks(hand_landmarks):
 
 class SignLanguageProcessor(VideoProcessorBase):
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
-        self.hands = self.mp_hands.Hands(
-            model_complexity=0,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        self.tracker = HandTracker()
         self.model = load_sign_model()
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1) # Mirror image
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        results = self.hands.process(img_rgb)
+        landmarks_list = self.tracker.process(img)
         
         prediction_text = "N/A"
         conf_text = ""
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    img,
-                    hand_landmarks,
-                    self.mp_hands.HAND_CONNECTIONS,
-                    self.mp_drawing_styles.get_default_hand_landmarks_style(),
-                    self.mp_drawing_styles.get_default_hand_connections_style()
-                )
-                
+        if landmarks_list:
+            for landmark_points in landmarks_list:
                 if self.model:
-                    landmarks = get_landmarks(hand_landmarks)
+                    landmarks = get_landmarks(landmark_points)
                     try:
                         prediction = self.model.predict([landmarks])[0]
                         if hasattr(self.model, "predict_proba"):
@@ -135,6 +192,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 

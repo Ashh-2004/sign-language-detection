@@ -34,35 +34,45 @@ def draw_landmarks_cv(image, hand_landmarks):
 class HandTracker:
     def __init__(self):
         self.use_solutions = HAS_SOLUTIONS
+        self.detector = None
+        self.hands = None
+        self.error_msg = None
+        
         if self.use_solutions:
-            self.mp_drawing = mp.solutions.drawing_utils
-            self.mp_drawing_styles = mp.solutions.drawing_styles
-            self.mp_hands = mp.solutions.hands
-            self.hands = self.mp_hands.Hands(
-                model_complexity=0,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
+            try:
+                self.mp_drawing = mp.solutions.drawing_utils
+                self.mp_drawing_styles = mp.solutions.drawing_styles
+                self.mp_hands = mp.solutions.hands
+                self.hands = self.mp_hands.Hands(
+                    model_complexity=0,
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+            except Exception as e:
+                self.error_msg = str(e)
         else:
-            from mediapipe.tasks import python
-            from mediapipe.tasks.python import vision
-            model_path = os.path.join(os.path.dirname(__file__), 'hand_landmarker.task')
-            if not os.path.exists(model_path):
-                import urllib.request
-                url = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
-                urllib.request.urlretrieve(url, model_path)
-            base_options = python.BaseOptions(model_asset_path=model_path)
-            options = vision.HandLandmarkerOptions(
-                base_options=base_options,
-                num_hands=2,
-                min_hand_detection_confidence=0.5,
-                min_hand_presence_confidence=0.5
-            )
-            self.detector = vision.HandLandmarker.create_from_options(options)
+            try:
+                from mediapipe.tasks import python
+                from mediapipe.tasks.python import vision
+                model_path = os.path.join(os.path.dirname(__file__), 'hand_landmarker.task')
+                if not os.path.exists(model_path):
+                    import urllib.request
+                    url = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+                    urllib.request.urlretrieve(url, model_path)
+                base_options = python.BaseOptions(model_asset_path=model_path)
+                options = vision.HandLandmarkerOptions(
+                    base_options=base_options,
+                    num_hands=2,
+                    min_hand_detection_confidence=0.5,
+                    min_hand_presence_confidence=0.5
+                )
+                self.detector = vision.HandLandmarker.create_from_options(options)
+            except Exception as e:
+                self.error_msg = str(e)
 
     def process(self, frame_rgb):
         landmarks_list = []
-        if self.use_solutions:
+        if self.use_solutions and self.hands:
             results = self.hands.process(frame_rgb)
             if results.multi_hand_landmarks:
                 for hand_landmarks in results.multi_hand_landmarks:
@@ -74,7 +84,7 @@ class HandTracker:
                         self.mp_drawing_styles.get_default_hand_connections_style()
                     )
                     landmarks_list.append(hand_landmarks.landmark)
-        else:
+        elif self.detector:
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
             result = self.detector.detect(mp_image)
             if result.hand_landmarks:

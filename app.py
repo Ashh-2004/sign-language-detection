@@ -122,11 +122,43 @@ def get_landmarks(landmark_points):
             
     return landmarks
 
+def process_frame(frame, tracker, model):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    landmarks_list = tracker.process(frame_rgb)
+    prediction_text = "N/A"
+    conf_text = ""
+
+    if landmarks_list:
+        for landmark_points in landmarks_list:
+            if model:
+                landmarks = get_landmarks(landmark_points)
+                try:
+                    prediction = model.predict([landmarks])[0]
+                    if hasattr(model, "predict_proba"):
+                        probabilities = model.predict_proba([landmarks])[0]
+                        confidence = max(probabilities)
+                        conf_text = f" ({confidence*100:.1f}%)"
+                        if confidence > 0.6:
+                            prediction_text = prediction
+                        else:
+                            prediction_text = "Uncertain"
+                    else:
+                        prediction_text = prediction
+                except Exception as e:
+                    prediction_text = f"Error: {e}"
+    return frame_rgb, prediction_text, conf_text
+
 def main():
     st.title("Real-Time Sign Language to Text Converter 👋")
-    st.markdown("This dashboard uses your webcam to detect hand gestures and converts them to text using a trained machine learning model.")
+    st.markdown("This dashboard uses hand gesture recognition to convert sign language into text.")
 
     model = load_sign_model()
+    
+    input_mode = st.radio(
+        "Select Input Method:",
+        ["📸 Browser Camera (Cloud Compatible)", "📹 Continuous Local Webcam"],
+        horizontal=True
+    )
     
     col1, col2 = st.columns([2, 1])
 
@@ -139,70 +171,60 @@ def main():
             
         st.markdown("### Instructions")
         st.markdown("""
-        1. Make sure your webcam is enabled.
-        2. Check the 'Run Webcam' box to start.
-        3. Perform the sign inside the camera frame.
+        1. Select your preferred input mode above.
+        2. Perform the sign gesture inside the camera frame.
+        3. View the predicted sign text output in real-time.
         """)
 
     with col1:
-        run = st.checkbox('Run Webcam')
-        FRAME_WINDOW = st.image([])
-        
-    if run:
-        camera = cv2.VideoCapture(0)
-        tracker = HandTracker()
-        
-        while run:
-            success, frame = camera.read()
-            if not success:
-                st.error("Failed to read from webcam.")
-                break
+        if input_mode == "📸 Browser Camera (Cloud Compatible)":
+            img_file = st.camera_input("Capture sign language gesture")
+            if img_file is not None:
+                bytes_data = img_file.getvalue()
+                frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+                tracker = HandTracker()
+                frame_rgb, prediction_text, conf_text = process_frame(frame, tracker, model)
+                st.image(frame_rgb, caption="Processed Hand Landmark Frame")
+                tracker.close()
                 
-            # Process Frame
-            frame = cv2.flip(frame, 1) # Mirror image
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            landmarks_list = tracker.process(frame_rgb)
-            
-            prediction_text = "N/A"
-            conf_text = ""
+                if prediction_text not in ["N/A", "Uncertain"]:
+                    placeholder.markdown(f"<h1 style='text-align: center; color: green;'>{prediction_text}{conf_text}</h1>", unsafe_allow_html=True)
+                elif prediction_text == "Uncertain":
+                    placeholder.markdown(f"<h1 style='text-align: center; color: orange;'>{prediction_text}</h1>", unsafe_allow_html=True)
+                else:
+                    placeholder.markdown(f"<h1 style='text-align: center; color: gray;'>No hand detected</h1>", unsafe_allow_html=True)
 
-            if landmarks_list:
-                for landmark_points in landmarks_list:
-                    if model:
-                        landmarks = get_landmarks(landmark_points)
-                        try:
-                            # Predict
-                            prediction = model.predict([landmarks])[0]
-                            # Get probability if available
-                            if hasattr(model, "predict_proba"):
-                                probabilities = model.predict_proba([landmarks])[0]
-                                confidence = max(probabilities)
-                                conf_text = f" ({confidence*100:.1f}%)"
-                                
-                                if confidence > 0.6:
-                                    prediction_text = prediction
-                                else:
-                                    prediction_text = "Uncertain"
-                            else:
-                                prediction_text = prediction
-                        except Exception as e:
-                            st.write(f"Prediction error: {e}")
-                            
-            # Update UI
-            FRAME_WINDOW.image(frame_rgb)
+        else:
+            run = st.checkbox('Run Local Webcam')
+            FRAME_WINDOW = st.image([])
             
-            if prediction_text != "N/A" and prediction_text != "Uncertain":
-                placeholder.markdown(f"<h1 style='text-align: center; color: green;'>{prediction_text}{conf_text}</h1>", unsafe_allow_html=True)
-            elif prediction_text == "Uncertain":
-                 placeholder.markdown(f"<h1 style='text-align: center; color: orange;'>{prediction_text}</h1>", unsafe_allow_html=True)
-            else:
-                placeholder.markdown(f"<h1 style='text-align: center; color: gray;'>Waiting for hand...</h1>", unsafe_allow_html=True)
+            if run:
+                camera = cv2.VideoCapture(0)
+                tracker = HandTracker()
+                
+                while run:
+                    success, frame = camera.read()
+                    if not success:
+                        st.error("Cannot access local camera `/dev/video0` on cloud server. Please switch to '📸 Browser Camera' mode above!")
+                        break
+                        
+                    frame = cv2.flip(frame, 1) # Mirror image
+                    frame_rgb, prediction_text, conf_text = process_frame(frame, tracker, model)
+                    
+                    FRAME_WINDOW.image(frame_rgb)
+                    
+                    if prediction_text not in ["N/A", "Uncertain"]:
+                        placeholder.markdown(f"<h1 style='text-align: center; color: green;'>{prediction_text}{conf_text}</h1>", unsafe_allow_html=True)
+                    elif prediction_text == "Uncertain":
+                        placeholder.markdown(f"<h1 style='text-align: center; color: orange;'>{prediction_text}</h1>", unsafe_allow_html=True)
+                    else:
+                        placeholder.markdown(f"<h1 style='text-align: center; color: gray;'>Waiting for hand...</h1>", unsafe_allow_html=True)
 
-        camera.release()
-        tracker.close()
-        st.write("Stopped")
+                camera.release()
+                tracker.close()
+                st.write("Stopped")
 
 if __name__ == '__main__':
     main()
+
 

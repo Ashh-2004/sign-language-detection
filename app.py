@@ -4,11 +4,17 @@ import mediapipe as mp
 import numpy as np
 import pickle
 import os
+import av
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # Set Streamlit page config
 st.set_page_config(page_title="Sign Language to Text", layout="wide", page_icon="👋")
 
 MODEL_PATH = 'model.pkl'
+
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
 # Check MediaPipe API version
 HAS_SOLUTIONS = hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands')
@@ -94,7 +100,7 @@ class HandTracker:
         return landmarks_list
 
     def close(self):
-        if self.use_solutions and hasattr(self, 'hands'):
+        if self.use_solutions and hasattr(self, 'hands') and self.hands:
             self.hands.close()
 
 @st.cache_resource(show_spinner="Loading scale-invariant model...")
@@ -148,36 +154,66 @@ def process_frame(frame, tracker, model):
                     prediction_text = f"Error: {e}"
     return frame_rgb, prediction_text, conf_text
 
+class SignLanguageProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.tracker = HandTracker()
+        self.model = load_sign_model()
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+        
+        frame_rgb, prediction_text, conf_text = process_frame(img, self.tracker, self.model)
+        
+        out_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        
+        overlay_text = f"Sign: {prediction_text}{conf_text}" if prediction_text != "N/A" else "Waiting for hand gesture..."
+        color = (0, 255, 0) if prediction_text not in ["N/A", "Uncertain"] else ((0, 165, 255) if prediction_text == "Uncertain" else (200, 200, 200))
+        
+        cv2.rectangle(out_bgr, (10, 10), (550, 60), (0, 0, 0), -1)
+        cv2.putText(out_bgr, overlay_text, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2, cv2.LINE_AA)
+        
+        return av.VideoFrame.from_ndarray(out_bgr, format="bgr24")
+
 def main():
     st.title("Real-Time Sign Language to Text Converter 👋")
-    st.markdown("This dashboard uses hand gesture recognition to convert sign language into text.")
+    st.markdown("Continuous real-time hand gesture recognition powered by MediaPipe and WebRTC.")
 
     model = load_sign_model()
     
     input_mode = st.radio(
-        "Select Input Method:",
-        ["📸 Browser Camera (Cloud Compatible)", "📹 Continuous Local Webcam"],
+        "Select Camera Mode:",
+        ["📹 Continuous WebRTC Live Stream (Cloud & Mobile)", "📸 Single Photo Snapshot", "📹 Continuous Local Webcam"],
         horizontal=True
     )
     
     col1, col2 = st.columns([2, 1])
 
     with col2:
-        st.markdown("### Prediction")
-        placeholder = st.empty()
+        st.markdown("### Prediction Info")
         
         if not model:
             st.warning("Model not found! Please train the model first by running `train_model.py`.")
             
         st.markdown("### Instructions")
         st.markdown("""
-        1. Select your preferred input mode above.
-        2. Perform the sign gesture inside the camera frame.
-        3. View the predicted sign text output in real-time.
+        1. Select **📹 Continuous WebRTC Live Stream** for continuous cloud video prediction.
+        2. Click **START** on the video player below to open your camera.
+        3. Perform sign language gestures in real-time.
         """)
 
     with col1:
-        if input_mode == "📸 Browser Camera (Cloud Compatible)":
+        if input_mode == "📹 Continuous WebRTC Live Stream (Cloud & Mobile)":
+            st.markdown("#### Live WebRTC Video Stream")
+            webrtc_streamer(
+                key="sign-language-detection",
+                video_processor_factory=SignLanguageProcessor,
+                rtc_configuration=RTC_CONFIGURATION,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+            
+        elif input_mode == "📸 Single Photo Snapshot":
             img_file = st.camera_input("Capture sign language gesture")
             if img_file is not None:
                 bytes_data = img_file.getvalue()
@@ -188,15 +224,16 @@ def main():
                 tracker.close()
                 
                 if prediction_text not in ["N/A", "Uncertain"]:
-                    placeholder.markdown(f"<h1 style='text-align: center; color: green;'>{prediction_text}{conf_text}</h1>", unsafe_allow_html=True)
+                    st.markdown(f"<h1 style='text-align: center; color: green;'>{prediction_text}{conf_text}</h1>", unsafe_allow_html=True)
                 elif prediction_text == "Uncertain":
-                    placeholder.markdown(f"<h1 style='text-align: center; color: orange;'>{prediction_text}</h1>", unsafe_allow_html=True)
+                    st.markdown(f"<h1 style='text-align: center; color: orange;'>{prediction_text}</h1>", unsafe_allow_html=True)
                 else:
-                    placeholder.markdown(f"<h1 style='text-align: center; color: gray;'>No hand detected</h1>", unsafe_allow_html=True)
+                    st.markdown(f"<h1 style='text-align: center; color: gray;'>No hand detected</h1>", unsafe_allow_html=True)
 
         else:
-            run = st.checkbox('Run Local Webcam')
+            run = st.checkbox('Run Local OpenCV Webcam')
             FRAME_WINDOW = st.image([])
+            placeholder = st.empty()
             
             if run:
                 camera = cv2.VideoCapture(0)
@@ -205,10 +242,10 @@ def main():
                 while run:
                     success, frame = camera.read()
                     if not success:
-                        st.error("Cannot access local camera `/dev/video0` on cloud server. Please switch to '📸 Browser Camera' mode above!")
+                        st.error("Cannot access local camera `/dev/video0` on cloud server. Please switch to '📹 Continuous WebRTC Live Stream' mode above!")
                         break
                         
-                    frame = cv2.flip(frame, 1) # Mirror image
+                    frame = cv2.flip(frame, 1)
                     frame_rgb, prediction_text, conf_text = process_frame(frame, tracker, model)
                     
                     FRAME_WINDOW.image(frame_rgb)

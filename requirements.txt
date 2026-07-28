@@ -5,4 +5,4 @@ mediapipe==0.10.14
 protobuf==3.20.3
 numpy
 scikit-learn
-av
+av==10.0.0
